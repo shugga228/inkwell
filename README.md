@@ -22,3 +22,11 @@ npm run dev
 npm run build
 npm run preview
 ```
+
+## Deploy to GitHub Pages
+
+This project builds to a static `dist/` directory and uses relative asset paths, so it works on GitHub Pages project sites.
+
+1. Push to `main`.
+2. In repository settings, set **Pages** source to **GitHub Actions**.
+3. The included workflow publishes the `dist/` build output.
