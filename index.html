@@ -9,50 +9,104 @@
   <body>
     <div class="app">
       <header class="toolbar">
+        <div class="toolbar-brand">
+          <span class="brand-mark">P</span>
+          <div>
+            <strong>PDF Editor</strong>
+            <span>Precision markup workspace</span>
+          </div>
+        </div>
         <label class="file-input">
-          Open PDF
+          <span>Open PDF</span>
           <input id="pdfInput" type="file" accept="application/pdf" />
         </label>
 
-        <div class="tool-group">
-          <label>
-            Tool
-            <select id="toolSelect">
-              <option value="pen">Pen</option>
-              <option value="highlighter">Highlighter</option>
-            </select>
-          </label>
-          <label>
-            Pen color
-            <input id="penColor" type="color" value="#0f172a" />
-          </label>
-          <label>
-            Highlighter color
-            <input id="highlighterColor" type="color" value="#fde047" />
-          </label>
+        <div class="tool-buttons" aria-label="Tools">
+          <button class="tool-button is-active" type="button" data-tool="pen" title="Pen" aria-label="Pen" aria-pressed="true">✎</button>
+          <button class="tool-button" type="button" data-tool="highlighter" title="Highlighter" aria-label="Highlighter" aria-pressed="false">▰</button>
+          <button class="tool-button" type="button" data-tool="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false">⌫</button>
+          <select id="toolSelect" hidden aria-hidden="true">
+            <option value="pen">Pen</option>
+            <option value="highlighter">Highlighter</option>
+            <option value="eraser">Eraser</option>
+          </select>
         </div>
 
-        <div class="tool-group">
+        <div class="toolbar-popout">
+          <button class="popout-trigger" type="button">Colors <span>⌄</span></button>
+          <div class="popout-panel tool-group">
+            <label>
+              <span class="label-text">Pen color</span>
+              <input id="penColor" type="color" value="#0f172a" />
+            </label>
+            <label>
+              <span class="label-text">Highlight color</span>
+              <input id="highlighterColor" type="color" value="#fde047" />
+            </label>
+          </div>
+        </div>
+
+        <div class="toolbar-popout">
+          <button class="popout-trigger" type="button">Adjust <span>⌄</span></button>
+          <div class="popout-panel tool-group">
+          <label>
+            <span class="label-text">Pen opacity</span>
+            <input id="penOpacity" type="range" min="0.05" max="1" step="0.05" value="0.65" />
+            <output id="penOpacityValue">65%</output>
+          </label>
+          <label>
+            <span class="label-text">Pen thickness</span>
+            <input id="penWidth" type="range" min="1" max="24" step="0.5" value="2.5" />
+            <output id="penWidthValue">2.5</output>
+          </label>
+          <label>
+            <span class="label-text">Highlight opacity</span>
+            <input id="highlighterOpacity" type="range" min="0.05" max="1" step="0.01" value="0.23" />
+            <output id="highlighterOpacityValue">23%</output>
+          </label>
+          <label>
+            <span class="label-text">Highlight thickness</span>
+            <input id="highlighterWidth" type="range" min="2" max="48" step="1" value="14" />
+            <output id="highlighterWidthValue">14</output>
+          </label>
+          <label>
+            <span class="label-text">Eraser size</span>
+            <input id="eraserWidth" type="range" min="8" max="72" step="2" value="24" />
+            <output id="eraserWidthValue">24</output>
+          </label>
           <label class="inline-option">
             <input id="smoothingEnabled" type="checkbox" checked />
             Smoothing
           </label>
           <label>
-            Weight
+            <span class="label-text">Smoothing</span>
             <input id="smoothingWeight" type="range" min="0" max="0.95" step="0.05" value="0.65" />
           </label>
           <output id="weightValue">0.65</output>
+          </div>
         </div>
 
+        <div class="history-actions" aria-label="History">
+          <button id="undoButton" class="icon-button" type="button" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+          <button id="redoButton" class="icon-button" type="button" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
+        </div>
+        <div class="zoom-actions" aria-label="Zoom">
+          <button id="zoomOutButton" class="icon-button" type="button" title="Zoom out (Ctrl+-)" aria-label="Zoom out">−</button>
+          <output id="zoomValue">100%</output>
+          <button id="zoomInButton" class="icon-button" type="button" title="Zoom in (Ctrl++)" aria-label="Zoom in">+</button>
+        </div>
         <button id="exportButton" type="button" disabled>Export PDF</button>
       </header>
 
       <main>
         <p id="status">Load a PDF to start annotating.</p>
-        <div id="pages" class="pages"></div>
+        <div id="documentViewport" class="document-viewport">
+          <div id="pages" class="pages"></div>
+        </div>
       </main>
     </div>
 
     <script type="module" src="/src/main.js"></script>
+    <div id="cursorRing" class="cursor-ring" aria-hidden="true"></div>
   </body>
 </html>
