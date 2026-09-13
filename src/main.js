@@ -20,6 +20,7 @@ const ui = {
 const state = {
   pdfBytes: null,
   pdfDoc: null,
+  exportSupported: false,
   pageSizes: [],
   annotations: [],
   activeStroke: null,
@@ -43,16 +44,31 @@ ui.pdfInput.addEventListener('change', async (event) => {
 
   const bytes = new Uint8Array(await file.arrayBuffer())
   state.pdfBytes = bytes
+  state.exportSupported = false
   state.annotations = []
   ui.exportButton.disabled = true
 
-  await loadAndRenderPdf(bytes)
-  ui.status.textContent = `Loaded: ${file.name}`
-  ui.exportButton.disabled = false
+  try {
+    await loadAndRenderPdf(bytes)
+
+    const compatibility = await checkExportCompatibility(bytes)
+    state.exportSupported = compatibility.ok
+
+    if (compatibility.ok) {
+      ui.status.textContent = `Loaded: ${file.name}`
+      ui.exportButton.disabled = false
+      return
+    }
+
+    ui.status.textContent = `Loaded: ${file.name}. Export unavailable: ${compatibility.message}`
+  } catch (error) {
+    ui.status.textContent = `Failed to load PDF: ${errorMessage(error)}`
+  }
 })
 
 ui.exportButton.addEventListener('click', async () => {
-  if (!state.pdfBytes) {
+  if (!state.pdfBytes || !state.exportSupported) {
+    ui.status.textContent = 'This PDF cannot be exported by the current export engine.'
     return
   }
 
@@ -69,17 +85,29 @@ ui.exportButton.addEventListener('click', async () => {
     link.click()
     URL.revokeObjectURL(url)
     ui.status.textContent = 'Export complete.'
-  } catch {
-    ui.status.textContent = 'Export failed. Please try again.'
+  } catch (error) {
+    ui.status.textContent = `Export failed: ${errorMessage(error)}`
   } finally {
     ui.exportButton.disabled = false
   }
 })
 
+async function checkExportCompatibility(bytes) {
+  try {
+    await PDFDocument.load(bytes)
+    return { ok: true }
+  } catch (error) {
+    return {
+      ok: false,
+      message: errorMessage(error)
+    }
+  }
+}
+
 async function loadAndRenderPdf(bytes) {
   ui.pages.replaceChildren()
 
-  const loadingTask = pdfjsLib.getDocument({ data: bytes })
+  const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() })
   state.pdfDoc = await loadingTask.promise
   state.pageSizes = []
 
@@ -304,4 +332,12 @@ function canvasToPdfPoint(point, size) {
   const y = size.pdfHeight - (point.y / size.canvasHeight) * size.pdfHeight
 
   return { x, y }
+}
+
+function errorMessage(error) {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  return 'Unknown error'
 }
