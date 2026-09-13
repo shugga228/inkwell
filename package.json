@@ -1,0 +1,24 @@
+{
+  "name": "pdf-editor",
+  "version": "1.0.0",
+  "description": "Lightweight PDF editor web app with pen/highlighter tools and PDF export",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests configured\"",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://localhost:26831/shugga228/pdf-editor"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.3.289",
+    "vite": "^8.3.0"
+  }
+}
