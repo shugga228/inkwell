@@ -3,28 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PDF Editor</title>
+    <title>inkwell</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div class="app">
       <header class="toolbar">
         <div class="toolbar-brand">
-          <span class="brand-mark">P</span>
+          <span class="brand-mark"><img src="/icons/ink-svgrepo-com.svg" alt="" /></span>
           <div>
-            <strong>PDF Editor</strong>
-            <span>Precision markup workspace</span>
+            <strong>inkwell</strong>
+            <span>mark your pages</span>
           </div>
         </div>
         <label class="file-input">
-          <span>Open PDF</span>
+          <span class="file-input-icon" aria-hidden="true">↥</span>
+          <span>open pdf</span>
           <input id="pdfInput" type="file" accept="application/pdf" />
         </label>
 
         <div class="tool-buttons" aria-label="Tools">
-          <button class="tool-button is-active" type="button" data-tool="pen" title="Pen" aria-label="Pen" aria-pressed="true">✎</button>
-          <button class="tool-button" type="button" data-tool="highlighter" title="Highlighter" aria-label="Highlighter" aria-pressed="false">▰</button>
-          <button class="tool-button" type="button" data-tool="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false">⌫</button>
+          <button class="tool-button is-active" type="button" data-tool="pen" title="Pen" aria-label="Pen" aria-pressed="true"><img src="/icons/pen-nib-svgrepo-com.svg" alt="" /></button>
+          <button class="tool-button" type="button" data-tool="highlighter" title="Highlighter" aria-label="Highlighter" aria-pressed="false"><img src="/icons/highlighter-svgrepo-com.svg" alt="" /></button>
+          <button class="tool-button" type="button" data-tool="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false"><img src="/icons/eraser-svgrepo-com.svg" alt="" /></button>
           <select id="toolSelect" hidden aria-hidden="true">
             <option value="pen">Pen</option>
             <option value="highlighter">Highlighter</option>
