@@ -1,39 +1,39 @@
 # inkwell
 
-inkwell is a lightweight browser-based PDF annotation app. Open a PDF, mark it
+inkwell is a lightweight browser-based pdf annotation app. open a pdf, mark it
 up directly in the browser, and export the annotated document as a new PDF.
 
-## Live app
+## live app
 
-Use inkwell on GitHub Pages:
+use inkwell on github pages:
 
 <https://shugga228.github.io/inkwell/>
 
-## Features
+## features
 
-- Load and render PDF documents in the browser
-- Pressure-sensitive pen tool with a fallback for unsupported pointers
-- Adjustable pen opacity, thickness, and smoothing
-- Highlighter with configurable color, opacity, and thickness
-- Eraser with adjustable size
-- Undo, redo, and zoom controls
-- Export annotations as a PDF
+- load and render pdf documents in the browser
+- pressure-sensitive pen tool with a fallback for unsupported pointers
+- adjustable pen opacity, thickness, and smoothing
+- highlighter with configurable color, opacity, and thickness
+- eraser with adjustable size
+- undo, redo, and zoom controls
+- export annotations as a pdf
 
-## Run locally
+## run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Build and preview
+## build and preview
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## SVG attribution
+## svg attribution
 
-The ink, pen nib, highlighter, and eraser SVG icons are from [SVG Repo](https://www.svgrepo.com/).
+various svg icons used in the app are from [svg repo](https://www.svgrepo.com/).
 

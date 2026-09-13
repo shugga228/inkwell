@@ -81,6 +81,18 @@ body {
   font-style: italic;
 }
 
+#status {
+  flex: 1 1 auto;
+  min-width: 8rem;
+  margin: 0 0.5rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-style: italic;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .brand-mark {
   display: grid;
   place-items: center;
@@ -407,6 +419,44 @@ main {
   touch-action: none;
   cursor: none;
 }
+
+.selection-box {
+  position: absolute;
+  z-index: 2;
+  border: 1px dashed #1683ff;
+  background: rgba(22, 131, 255, 0.08);
+  pointer-events: none;
+}
+
+.selection-handle {
+  position: absolute;
+  width: 0.65rem;
+  height: 0.65rem;
+  border: 1px solid #1683ff;
+  background: #ffffff;
+  transform: translate(-50%, -50%);
+}
+
+.selection-handle.rotate {
+  top: -1.35rem;
+  left: 50%;
+  border-radius: 50%;
+}
+
+.selection-handle.rotate::after {
+  content: "";
+  position: absolute;
+  top: 0.55rem;
+  left: 50%;
+  width: 1px;
+  height: 0.7rem;
+  background: #1683ff;
+}
+
+.selection-handle.nw { top: 0; left: 0; }
+.selection-handle.ne { top: 0; left: 100%; }
+.selection-handle.sw { top: 100%; left: 0; }
+.selection-handle.se { top: 100%; left: 100%; }
 
 .cursor-ring {
   position: fixed;

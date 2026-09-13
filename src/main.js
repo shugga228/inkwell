@@ -41,10 +41,14 @@ const state = {
   exportSupported: false,
   pageSizes: [],
   annotations: [],
+  selection: null,
+  selectionGesture: null,
+  clipboardSelection: null,
   activeStroke: null,
   currentPointerId: null,
   scale: 2,
   zoom: 1,
+  zoomAnchor: null,
   isPanning: false,
   panStart: null,
   defaultPenOpacity: 0.65,
@@ -77,6 +81,7 @@ ui.zoomOutButton.addEventListener('click', () => setZoom(state.zoom - 0.25))
 ui.zoomInButton.addEventListener('click', () => setZoom(state.zoom + 0.25))
 ui.toolButtons.forEach((button) => {
   button.addEventListener('click', () => {
+    cancelActiveGesture()
     ui.toolSelect.value = button.dataset.tool
     ui.toolButtons.forEach((toolButton) => {
       const isActive = toolButton === button
@@ -102,6 +107,8 @@ ui.documentViewport.addEventListener('pointerdown', (event) => {
 })
 
 ui.documentViewport.addEventListener('pointermove', (event) => {
+  state.zoomAnchor = { x: event.clientX, y: event.clientY }
+
   if (!state.isPanning || !state.panStart) return
 
   ui.documentViewport.scrollLeft = state.panStart.scrollLeft - (event.clientX - state.panStart.x)
@@ -124,10 +131,29 @@ ui.documentViewport.addEventListener('wheel', (event) => {
   if (!(event.ctrlKey || event.metaKey)) return
 
   event.preventDefault()
-  setZoom(state.zoom + (event.deltaY < 0 ? 0.25 : -0.25))
+  setZoom(state.zoom + (event.deltaY < 0 ? 0.25 : -0.25), event)
 }, { passive: false })
 
 document.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && state.selection) {
+    const { pageIndex, strokeIndexes } = state.selection
+    state.clipboardSelection = structuredClone(strokeIndexes.map((index) => state.annotations[pageIndex][index]))
+    event.preventDefault()
+    return
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && state.clipboardSelection?.length) {
+    pasteSelection()
+    event.preventDefault()
+    return
+  }
+
+  if (event.key === 'Delete' && state.selection) {
+    deleteSelection()
+    event.preventDefault()
+    return
+  }
+
   if (!(event.ctrlKey || event.metaKey)) return
 
   if (event.key.toLowerCase() === 'z') {
@@ -152,6 +178,9 @@ ui.pdfInput.addEventListener('change', async (event) => {
   state.pdfBytes = bytes
   state.exportSupported = false
   state.annotations = []
+  state.selection = null
+  state.selectionGesture = null
+  state.clipboardSelection = null
   state.history = []
   state.historyIndex = -1
   ui.exportButton.disabled = true
@@ -163,25 +192,25 @@ ui.pdfInput.addEventListener('change', async (event) => {
     state.exportSupported = compatibility.ok
 
     if (compatibility.ok) {
-      ui.status.textContent = `Loaded: ${file.name}`
+      ui.status.textContent = `loaded: ${file.name}`
       ui.exportButton.disabled = false
       return
     }
 
-    ui.status.textContent = `Loaded: ${file.name}. Export unavailable: ${compatibility.message}`
+    ui.status.textContent = `loaded: ${file.name}. export unavailable: ${compatibility.message}`
   } catch (error) {
-    ui.status.textContent = `Failed to load PDF: ${errorMessage(error)}`
+    ui.status.textContent = `failed to load pdf: ${errorMessage(error)}`
   }
 })
 
 ui.exportButton.addEventListener('click', async () => {
   if (!state.pdfBytes || !state.exportSupported) {
-    ui.status.textContent = 'This PDF cannot be exported by the current export engine.'
+    ui.status.textContent = 'this pdf cannot be exported by the current export engine.'
     return
   }
 
   ui.exportButton.disabled = true
-  ui.status.textContent = 'Exporting…'
+  ui.status.textContent = 'exporting…'
 
   try {
     const output = await exportPdfWithAnnotations()
@@ -192,9 +221,9 @@ ui.exportButton.addEventListener('click', async () => {
     link.download = 'annotated.pdf'
     link.click()
     URL.revokeObjectURL(url)
-    ui.status.textContent = 'Export complete.'
+    ui.status.textContent = 'export complete.'
   } catch (error) {
-    ui.status.textContent = `Export failed: ${errorMessage(error)}`
+    ui.status.textContent = `export failed: ${errorMessage(error)}`
   } finally {
     ui.exportButton.disabled = false
   }
@@ -291,6 +320,11 @@ function setupDrawing(canvas, pageIndex) {
     const point = pointFromEvent(event, canvas)
     const tool = ui.toolSelect.value
 
+    if (tool === 'select') {
+      beginSelectionGesture(event, canvas, pageIndex, point)
+      return
+    }
+
     if (tool === 'eraser') {
       state.activeStroke = { pageIndex, tool, points: [point], changed: false }
       eraseAtPoint(pageIndex, point)
@@ -319,6 +353,11 @@ function setupDrawing(canvas, pageIndex) {
   }
 
   canvas.onpointermove = (event) => {
+    if (state.selectionGesture && state.currentPointerId === event.pointerId) {
+      updateSelectionGesture(event, canvas)
+      return
+    }
+
     if (!state.activeStroke || state.currentPointerId !== event.pointerId) {
       return
     }
@@ -350,6 +389,11 @@ function setupDrawing(canvas, pageIndex) {
   }
 
   const finishStroke = (event) => {
+    if (state.selectionGesture && state.currentPointerId === event.pointerId) {
+      finishSelectionGesture(event, canvas)
+      return
+    }
+
     if (!state.activeStroke || state.currentPointerId !== event.pointerId) {
       return
     }
@@ -382,6 +426,296 @@ function setupDrawing(canvas, pageIndex) {
 
   canvas.onpointerup = finishStroke
   canvas.onpointercancel = finishStroke
+}
+
+function beginSelectionGesture(event, canvas, pageIndex, point) {
+  const selection = state.selection?.pageIndex === pageIndex ? state.selection : null
+  const handle = selection ? selectionHandleAt(selection.bounds, point) : null
+  let type = 'marquee'
+
+  if (handle === 'rotate') type = 'rotate'
+  else if (handle) type = `resize-${handle}`
+  else if (selection && pointInBounds(point, selection.bounds)) type = 'move'
+
+  const originalStrokes = selection
+    ? selection.strokeIndexes.map((index) => structuredClone(state.annotations[pageIndex][index]))
+    : []
+
+  state.selectionGesture = {
+    type,
+    pageIndex,
+    start: point,
+    originalSelection: selection ? structuredClone(selection) : null,
+    originalStrokes
+  }
+  state.currentPointerId = event.pointerId
+  canvas.setPointerCapture(event.pointerId)
+
+  if (type === 'marquee') {
+    state.selection = null
+    renderSelectionOverlay()
+  }
+  event.preventDefault()
+}
+
+function updateSelectionGesture(event, canvas) {
+  const gesture = state.selectionGesture
+  const point = pointFromEvent(event, canvas)
+
+  if (gesture.type === 'marquee') {
+    state.selection = {
+      pageIndex: gesture.pageIndex,
+      strokeIndexes: [],
+      bounds: boundsFromPoints([gesture.start, point])
+    }
+    renderSelectionOverlay(true)
+    event.preventDefault()
+    return
+  }
+
+  const selection = gesture.originalSelection
+  if (!selection) return
+
+  const transformed = gesture.originalStrokes.map((stroke) => ({
+    ...stroke,
+    points: stroke.points.map((strokePoint) => transformSelectionPoint(
+      strokePoint,
+      selection.bounds,
+      gesture.start,
+      point,
+      gesture.type
+    ))
+  }))
+  clampStrokesToCanvas(transformed, canvas.width, canvas.height)
+  transformed.forEach((stroke, index) => {
+    state.annotations[gesture.pageIndex][selection.strokeIndexes[index]] = stroke
+  })
+  state.selection = {
+    ...selection,
+    bounds: selectionBounds(transformed)
+  }
+  redrawPage(gesture.pageIndex)
+  renderSelectionOverlay()
+  event.preventDefault()
+}
+
+function cancelActiveGesture() {
+  const pointerId = state.currentPointerId
+  const gesture = state.selectionGesture
+  if (gesture?.type !== 'marquee' && gesture?.originalSelection
+    && selectionChanged(gesture.originalSelection, state.selection)) {
+    commitHistory()
+  }
+
+  if (pointerId !== null) {
+    document.querySelectorAll('canvas').forEach((canvas) => {
+      releasePointerCapture(canvas, pointerId)
+    })
+  }
+
+  state.activeStroke = null
+  state.selectionGesture = null
+  state.currentPointerId = null
+  state.isPanning = false
+  state.panStart = null
+}
+
+function releasePointerCapture(element, pointerId) {
+  if (!element.hasPointerCapture?.(pointerId)) return
+  try {
+    element.releasePointerCapture(pointerId)
+  } catch {}
+}
+
+function finishSelectionGesture(event, canvas) {
+  const gesture = state.selectionGesture
+  const point = pointFromEvent(event, canvas)
+
+  if (gesture.type === 'marquee') {
+    const bounds = boundsFromPoints([gesture.start, point])
+    const strokes = state.annotations[gesture.pageIndex]
+    const strokeIndexes = strokes
+      .map((stroke, index) => ({ stroke, index }))
+      .filter(({ stroke }) => boundsOverlap(bounds, selectionBounds([stroke])))
+      .map(({ index }) => index)
+    state.selection = strokeIndexes.length
+      ? { pageIndex: gesture.pageIndex, strokeIndexes, bounds: selectionBounds(strokeIndexes.map((index) => strokes[index])) }
+      : null
+  } else if (gesture.originalSelection && selectionChanged(gesture.originalSelection, state.selection)) {
+    commitHistory()
+  }
+
+  state.selectionGesture = null
+  state.currentPointerId = null
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+  renderSelectionOverlay()
+  event.preventDefault()
+}
+
+function selectionHandleAt(bounds, point) {
+  const tolerance = Math.max(12, Math.min(bounds.width, bounds.height) * 0.08)
+  const rotatePoint = { x: bounds.x + bounds.width / 2, y: bounds.y - 24 }
+  if (Math.hypot(point.x - rotatePoint.x, point.y - rotatePoint.y) <= tolerance) return 'rotate'
+
+  const corners = {
+    nw: { x: bounds.x, y: bounds.y },
+    ne: { x: bounds.x + bounds.width, y: bounds.y },
+    sw: { x: bounds.x, y: bounds.y + bounds.height },
+    se: { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
+  }
+  for (const [name, corner] of Object.entries(corners)) {
+    if (Math.hypot(point.x - corner.x, point.y - corner.y) <= tolerance) return name
+  }
+  return null
+}
+
+function pointInBounds(point, bounds) {
+  return point.x >= bounds.x && point.x <= bounds.x + bounds.width
+    && point.y >= bounds.y && point.y <= bounds.y + bounds.height
+}
+
+function boundsFromPoints(points) {
+  const xs = points.map((point) => point.x)
+  const ys = points.map((point) => point.y)
+  const left = Math.min(...xs)
+  const top = Math.min(...ys)
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, Math.max(...xs) - left),
+    height: Math.max(1, Math.max(...ys) - top)
+  }
+}
+
+function selectionBounds(strokes) {
+  const points = strokes.flatMap((stroke) => stroke.points)
+  return boundsFromPoints(points)
+}
+
+function boundsOverlap(first, second) {
+  return first.x <= second.x + second.width
+    && first.x + first.width >= second.x
+    && first.y <= second.y + second.height
+    && first.y + first.height >= second.y
+}
+
+function transformSelectionPoint(point, bounds, start, current, type) {
+  if (type === 'move') {
+    return { x: point.x + current.x - start.x, y: point.y + current.y - start.y }
+  }
+
+  const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+  if (type === 'rotate') {
+    const startAngle = Math.atan2(start.y - center.y, start.x - center.x)
+    const currentAngle = Math.atan2(current.y - center.y, current.x - center.x)
+    return rotatePoint(point, center, currentAngle - startAngle)
+  }
+
+  const corner = type.replace('resize-', '')
+  const anchor = {
+    x: corner.includes('w') ? bounds.x + bounds.width : bounds.x,
+    y: corner.includes('n') ? bounds.y + bounds.height : bounds.y
+  }
+  const scaleX = Math.max(0.05, Math.abs(current.x - anchor.x) / bounds.width)
+  const scaleY = Math.max(0.05, Math.abs(current.y - anchor.y) / bounds.height)
+  return {
+    x: anchor.x + (point.x - anchor.x) * scaleX,
+    y: anchor.y + (point.y - anchor.y) * scaleY
+  }
+}
+
+function rotatePoint(point, center, angle) {
+  const x = point.x - center.x
+  const y = point.y - center.y
+  const cosine = Math.cos(angle)
+  const sine = Math.sin(angle)
+  return {
+    x: center.x + x * cosine - y * sine,
+    y: center.y + x * sine + y * cosine
+  }
+}
+
+function clampStrokesToCanvas(strokes, canvasWidth, canvasHeight) {
+  const bounds = selectionBounds(strokes)
+  const minShiftX = canvasWidth >= bounds.width ? -bounds.x : canvasWidth - bounds.x - bounds.width
+  const maxShiftX = canvasWidth >= bounds.width ? canvasWidth - bounds.x - bounds.width : -bounds.x
+  const minShiftY = canvasHeight >= bounds.height ? -bounds.y : canvasHeight - bounds.y - bounds.height
+  const maxShiftY = canvasHeight >= bounds.height ? canvasHeight - bounds.y - bounds.height : -bounds.y
+  const shiftX = clamp(0, minShiftX, maxShiftX)
+  const shiftY = clamp(0, minShiftY, maxShiftY)
+
+  if (!shiftX && !shiftY) return
+  strokes.forEach((stroke) => {
+    stroke.points.forEach((point) => {
+      point.x += shiftX
+      point.y += shiftY
+    })
+  })
+}
+
+function selectionChanged(original, current) {
+  if (!current) return false
+  return original.bounds.x !== current.bounds.x
+    || original.bounds.y !== current.bounds.y
+    || original.bounds.width !== current.bounds.width
+    || original.bounds.height !== current.bounds.height
+}
+
+function renderSelectionOverlay(isPreview = false) {
+  document.querySelectorAll('.selection-box').forEach((element) => element.remove())
+  const selection = state.selection
+  if (!selection || (!selection.strokeIndexes.length && !isPreview)) return
+
+  const canvas = ui.pages.querySelectorAll('.annotation-layer')[selection.pageIndex]
+  if (!canvas) return
+  const box = document.createElement('div')
+  box.className = 'selection-box'
+  box.style.left = `${selection.bounds.x / canvas.width * 100}%`
+  box.style.top = `${selection.bounds.y / canvas.height * 100}%`
+  box.style.width = `${selection.bounds.width / canvas.width * 100}%`
+  box.style.height = `${selection.bounds.height / canvas.height * 100}%`
+
+  if (!isPreview) {
+    ;['nw', 'ne', 'sw', 'se'].forEach((position) => {
+      const handle = document.createElement('span')
+      handle.className = `selection-handle ${position}`
+      box.append(handle)
+    })
+    const rotateHandle = document.createElement('span')
+    rotateHandle.className = 'selection-handle rotate'
+    box.append(rotateHandle)
+  }
+  canvas.parentElement.append(box)
+}
+
+function deleteSelection() {
+  const { pageIndex, strokeIndexes } = state.selection
+  const indexes = new Set(strokeIndexes)
+  state.annotations[pageIndex] = state.annotations[pageIndex].filter((_, index) => !indexes.has(index))
+  state.selection = null
+  redrawPage(pageIndex)
+  commitHistory()
+  renderSelectionOverlay()
+}
+
+function pasteSelection() {
+  const pageIndex = state.selection?.pageIndex ?? 0
+  const canvas = ui.pages.querySelectorAll('.annotation-layer')[pageIndex]
+  const strokes = state.clipboardSelection.map((stroke) => ({
+    ...stroke,
+    points: stroke.points.map((point) => ({ ...point, x: point.x + 24, y: point.y + 24 }))
+  }))
+  if (canvas) clampStrokesToCanvas(strokes, canvas.width, canvas.height)
+  const firstIndex = state.annotations[pageIndex].length
+  state.annotations[pageIndex].push(...strokes)
+  state.selection = {
+    pageIndex,
+    strokeIndexes: strokes.map((_, index) => firstIndex + index),
+    bounds: selectionBounds(strokes)
+  }
+  redrawPage(pageIndex)
+  commitHistory()
+  renderSelectionOverlay()
 }
 
 function smoothPoint(nextPoint, previousSmoothedPoint, weight) {
@@ -501,12 +835,38 @@ function updateHistoryButtons() {
   ui.redoButton.disabled = state.historyIndex >= state.history.length - 1
 }
 
-function setZoom(value) {
-  state.zoom = clamp(Number(value), 0.5, 3)
+function setZoom(value, event = null) {
+  const nextZoom = clamp(Number(value), 0.5, 3)
+  if (nextZoom === state.zoom) return
+
+  const viewportRect = ui.documentViewport.getBoundingClientRect()
+  const anchor = event
+    ? { x: event.clientX, y: event.clientY }
+    : state.zoomAnchor ?? {
+      x: viewportRect.left + viewportRect.width / 2,
+      y: viewportRect.top + viewportRect.height / 2
+    }
+  const targetPage = document.elementFromPoint(anchor.x, anchor.y)?.closest('.page')
+  const targetRect = targetPage?.getBoundingClientRect()
+  const pagePoint = targetRect
+    ? {
+      x: (anchor.x - targetRect.left) / targetRect.width,
+      y: (anchor.y - targetRect.top) / targetRect.height
+    }
+    : null
+
+  state.zoom = nextZoom
   ui.pages.style.setProperty('--zoom', state.zoom)
   ui.zoomValue.value = `${Math.round(state.zoom * 100)}%`
   ui.zoomOutButton.disabled = state.zoom <= 0.5
   ui.zoomInButton.disabled = state.zoom >= 3
+
+  if (targetPage && pagePoint) {
+    const nextRect = targetPage.getBoundingClientRect()
+    ui.documentViewport.scrollLeft += nextRect.left + nextRect.width * pagePoint.x - anchor.x
+    ui.documentViewport.scrollTop += nextRect.top + nextRect.height * pagePoint.y - anchor.y
+  }
+
   updateCanvasCursors()
 }
 
@@ -515,9 +875,13 @@ function updateCanvasCursors() {
 }
 
 function updateCursorRingSize() {
+  const tool = ui.toolSelect.value
+  if (tool === 'select') {
+    ui.cursorRing.classList.remove('is-visible')
+    return
+  }
   if (!state.cursorCanvas) return
 
-  const tool = ui.toolSelect.value
   const width = tool === 'pen'
     ? Number(ui.penWidth.value)
     : tool === 'highlighter'
