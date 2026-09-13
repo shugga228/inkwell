@@ -107,7 +107,7 @@ async function checkExportCompatibility(bytes) {
 async function loadAndRenderPdf(bytes) {
   ui.pages.replaceChildren()
 
-  const loadingTask = pdfjsLib.getDocument({ data: bytes })
+  const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() })
   state.pdfDoc = await loadingTask.promise
   state.pageSizes = []
 
