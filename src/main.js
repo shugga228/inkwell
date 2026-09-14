@@ -6,6 +6,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc
 
 const ui = {
   pdfInput: document.querySelector('#pdfInput'),
+  blankPdfButton: document.querySelector('#blankPdfButton'),
   toolSelect: document.querySelector('#toolSelect'),
   toolButtons: document.querySelectorAll('[data-tool]'),
   penColor: document.querySelector('#penColor'),
@@ -56,7 +57,8 @@ const state = {
   penWidth: 2.4,
   highlighterWidth: 14,
   history: [],
-  historyIndex: -1
+  historyIndex: -1,
+  hasUnexportedChanges: false
 }
 
 const settingOutputs = [
@@ -77,6 +79,7 @@ settingOutputs.forEach(([inputId, outputId, format]) => {
 
 ui.undoButton.addEventListener('click', undo)
 ui.redoButton.addEventListener('click', redo)
+ui.blankPdfButton.addEventListener('click', createBlankPdf)
 ui.zoomOutButton.addEventListener('click', () => setZoom(state.zoom - 0.25))
 ui.zoomInButton.addEventListener('click', () => setZoom(state.zoom + 0.25))
 ui.toolButtons.forEach((button) => {
@@ -174,33 +177,17 @@ ui.pdfInput.addEventListener('change', async (event) => {
     return
   }
 
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  state.pdfBytes = bytes
-  state.exportSupported = false
-  state.annotations = []
-  state.selection = null
-  state.selectionGesture = null
-  state.clipboardSelection = null
-  state.history = []
-  state.historyIndex = -1
-  ui.exportButton.disabled = true
-
   try {
-    await loadAndRenderPdf(bytes)
-
-    const compatibility = await checkExportCompatibility(bytes)
-    state.exportSupported = compatibility.ok
-
-    if (compatibility.ok) {
-      ui.status.textContent = `loaded: ${file.name}`
-      ui.exportButton.disabled = false
-      return
-    }
-
-    ui.status.textContent = `loaded: ${file.name}. export unavailable: ${compatibility.message}`
+    await loadDocument(new Uint8Array(await file.arrayBuffer()), `loaded: ${file.name}`)
   } catch (error) {
     ui.status.textContent = `failed to load pdf: ${errorMessage(error)}`
   }
+})
+
+window.addEventListener('beforeunload', (event) => {
+  if (!state.hasUnexportedChanges) return
+  event.preventDefault()
+  event.returnValue = 'All progress on this PDF will be lost if it is not exported.'
 })
 
 ui.exportButton.addEventListener('click', async () => {
@@ -221,6 +208,7 @@ ui.exportButton.addEventListener('click', async () => {
     link.download = 'annotated.pdf'
     link.click()
     URL.revokeObjectURL(url)
+    state.hasUnexportedChanges = false
     ui.status.textContent = 'export complete.'
   } catch (error) {
     ui.status.textContent = `export failed: ${errorMessage(error)}`
@@ -241,7 +229,71 @@ async function checkExportCompatibility(bytes) {
   }
 }
 
-async function loadAndRenderPdf(bytes) {
+async function loadDocument(bytes, statusText, annotations = null) {
+  state.pdfBytes = bytes
+  state.exportSupported = false
+  state.annotations = annotations ?? []
+  state.selection = null
+  state.selectionGesture = null
+  state.clipboardSelection = null
+  state.history = []
+  state.historyIndex = -1
+  state.hasUnexportedChanges = true
+  ui.exportButton.disabled = true
+
+  await loadAndRenderPdf(bytes, annotations)
+
+  const compatibility = await checkExportCompatibility(bytes)
+  state.exportSupported = compatibility.ok
+  if (compatibility.ok) {
+    ui.status.textContent = statusText
+    ui.exportButton.disabled = false
+    return
+  }
+
+  ui.status.textContent = `${statusText}. export unavailable: ${compatibility.message}`
+}
+
+async function createBlankPdf() {
+  try {
+    const pdfDoc = await PDFDocument.create()
+    pdfDoc.addPage([612, 792])
+    await loadDocument(await pdfDoc.save(), 'created blank pdf')
+  } catch (error) {
+    ui.status.textContent = `failed to create pdf: ${errorMessage(error)}`
+  }
+}
+
+async function addPageAfter(pageIndex) {
+  if (!state.pdfBytes) return
+
+  try {
+    const pdfDoc = await PDFDocument.load(state.pdfBytes)
+    const currentPage = pdfDoc.getPage(pageIndex)
+    pdfDoc.insertPage(pageIndex + 1, [currentPage.getWidth(), currentPage.getHeight()])
+    const annotations = state.annotations.slice()
+    annotations.splice(pageIndex + 1, 0, [])
+    await loadDocument(await pdfDoc.save(), `added page ${pageIndex + 2}`, annotations)
+  } catch (error) {
+    ui.status.textContent = `failed to add page: ${errorMessage(error)}`
+  }
+}
+
+async function removePage(pageIndex) {
+  if (!state.pdfBytes || state.pageSizes.length <= 1) return
+
+  try {
+    const pdfDoc = await PDFDocument.load(state.pdfBytes)
+    pdfDoc.removePage(pageIndex)
+    const annotations = state.annotations.slice()
+    annotations.splice(pageIndex, 1)
+    await loadDocument(await pdfDoc.save(), `removed page ${pageIndex + 1}`, annotations)
+  } catch (error) {
+    ui.status.textContent = `failed to remove page: ${errorMessage(error)}`
+  }
+}
+
+async function loadAndRenderPdf(bytes, existingAnnotations = null) {
   ui.pages.replaceChildren()
 
   const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() })
@@ -263,7 +315,16 @@ async function loadAndRenderPdf(bytes) {
 
     const wrapper = document.createElement('div')
     wrapper.className = 'page'
+    const controls = document.createElement('div')
+    controls.className = 'page-controls'
+    controls.innerHTML = `<span>page ${pageNumber}</span><button type="button" title="add a blank page after this page">+ page</button><button type="button" title="remove this page">remove</button>`
+    const addButton = controls.querySelectorAll('button')[0]
+    const removeButton = controls.querySelectorAll('button')[1]
+    addButton.addEventListener('click', () => addPageAfter(pageNumber - 1))
+    removeButton.addEventListener('click', () => removePage(pageNumber - 1))
+    removeButton.disabled = state.pdfDoc.numPages === 1
     wrapper.append(baseCanvas, annotationCanvas)
+    wrapper.append(controls)
 
     ui.pages.append(wrapper)
 
@@ -271,7 +332,7 @@ async function loadAndRenderPdf(bytes) {
     await page.render({ canvasContext: context, viewport }).promise
 
     setupDrawing(annotationCanvas, pageNumber - 1)
-    state.annotations[pageNumber - 1] = []
+    state.annotations[pageNumber - 1] = existingAnnotations?.[pageNumber - 1] ?? []
     state.pageSizes[pageNumber - 1] = {
       canvasWidth: viewport.width,
       canvasHeight: viewport.height,
@@ -810,6 +871,7 @@ function commitHistory() {
   state.history = state.history.slice(0, state.historyIndex + 1)
   state.history.push(structuredClone(state.annotations))
   state.historyIndex = state.history.length - 1
+  state.hasUnexportedChanges = true
   updateHistoryButtons()
 }
 
@@ -818,6 +880,7 @@ function restoreHistory(index) {
 
   state.historyIndex = index
   state.annotations = structuredClone(state.history[index])
+  state.hasUnexportedChanges = true
   state.annotations.forEach((_, pageIndex) => redrawPage(pageIndex))
   updateHistoryButtons()
 }
