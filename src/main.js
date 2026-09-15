@@ -39,6 +39,7 @@ const ui = {
 const state = {
   pdfBytes: null,
   pdfDoc: null,
+  loadingTask: null,
   exportSupported: false,
   pageSizes: [],
   annotations: [],
@@ -58,6 +59,7 @@ const state = {
   highlighterWidth: 14,
   history: [],
   historyIndex: -1,
+  maxHistoryEntries: 20,
   hasUnexportedChanges: false
 }
 
@@ -85,13 +87,7 @@ ui.zoomInButton.addEventListener('click', () => setZoom(state.zoom + 0.25))
 ui.toolButtons.forEach((button) => {
   button.addEventListener('click', () => {
     cancelActiveGesture()
-    ui.toolSelect.value = button.dataset.tool
-    ui.toolButtons.forEach((toolButton) => {
-      const isActive = toolButton === button
-      toolButton.classList.toggle('is-active', isActive)
-      toolButton.setAttribute('aria-pressed', String(isActive))
-    })
-    updateCanvasCursors()
+    setActiveTool(button.dataset.tool)
   })
 })
 
@@ -138,6 +134,15 @@ ui.documentViewport.addEventListener('wheel', (event) => {
 }, { passive: false })
 
 document.addEventListener('keydown', (event) => {
+  const toolByKey = { '1': 'pen', '2': 'highlighter', '3': 'line', '4': 'eraser', '5': 'select' }
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && toolByKey[event.key]
+    && !['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
+    cancelActiveGesture()
+    setActiveTool(toolByKey[event.key])
+    event.preventDefault()
+    return
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && state.selection) {
     const { pageIndex, strokeIndexes } = state.selection
     state.clipboardSelection = structuredClone(strokeIndexes.map((index) => state.annotations[pageIndex][index]))
@@ -294,10 +299,20 @@ async function removePage(pageIndex) {
 }
 
 async function loadAndRenderPdf(bytes, existingAnnotations = null) {
+  cancelActiveGesture()
+  if (state.loadingTask) {
+    await state.loadingTask.destroy()
+    state.loadingTask = null
+  }
+  state.pdfDoc = null
+  ui.pages.querySelectorAll('canvas').forEach((canvas) => {
+    canvas.width = 0
+    canvas.height = 0
+  })
   ui.pages.replaceChildren()
 
-  const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() })
-  state.pdfDoc = await loadingTask.promise
+  state.loadingTask = pdfjsLib.getDocument({ data: bytes.slice() })
+  state.pdfDoc = await state.loadingTask.promise
   state.pageSizes = []
 
   for (let pageNumber = 1; pageNumber <= state.pdfDoc.numPages; pageNumber += 1) {
@@ -330,6 +345,7 @@ async function loadAndRenderPdf(bytes, existingAnnotations = null) {
 
     const context = baseCanvas.getContext('2d')
     await page.render({ canvasContext: context, viewport }).promise
+    page.cleanup()
 
     setupDrawing(annotationCanvas, pageNumber - 1)
     state.annotations[pageNumber - 1] = existingAnnotations?.[pageNumber - 1] ?? []
@@ -394,13 +410,14 @@ function setupDrawing(canvas, pageIndex) {
     }
 
     const opacity = resolveOpacity(event, tool)
+    const usesPenSettings = tool === 'pen' || tool === 'line'
 
     state.activeStroke = {
       pageIndex,
       tool,
-      color: tool === 'pen' ? ui.penColor.value : ui.highlighterColor.value,
-      width: tool === 'pen' ? Number(ui.penWidth.value) : Number(ui.highlighterWidth.value),
-      opacity: tool === 'pen' ? Number(ui.penOpacity.value) : Number(ui.highlighterOpacity.value),
+      color: usesPenSettings ? ui.penColor.value : ui.highlighterColor.value,
+      width: usesPenSettings ? Number(ui.penWidth.value) : Number(ui.highlighterWidth.value),
+      opacity: usesPenSettings ? Number(ui.penOpacity.value) : Number(ui.highlighterOpacity.value),
       points: [
         {
           ...point,
@@ -440,8 +457,21 @@ function setupDrawing(canvas, pageIndex) {
 
     state.activeStroke.smoothedPoint = finalPoint
 
-    const previous = state.activeStroke.points[state.activeStroke.points.length - 1]
     const pointWithOpacity = { ...finalPoint, opacity }
+
+    if (state.activeStroke.tool === 'line') {
+      state.activeStroke.points = [state.activeStroke.points[0], pointWithOpacity]
+      redrawPage(pageIndex)
+      drawSegment(ctx, state.activeStroke, state.activeStroke.points[0], pointWithOpacity)
+      event.preventDefault()
+      return
+    }
+
+    const previous = state.activeStroke.points[state.activeStroke.points.length - 1]
+    if (Math.hypot(pointWithOpacity.x - previous.x, pointWithOpacity.y - previous.y) < 1.5) {
+      event.preventDefault()
+      return
+    }
 
     drawSegment(ctx, state.activeStroke, previous, pointWithOpacity)
     state.activeStroke.points.push(pointWithOpacity)
@@ -827,26 +857,11 @@ function eraseAtPoint(pageIndex, point) {
   let didErase = false
 
   strokes.forEach((stroke) => {
-    const eraseDistance = radius + stroke.width / 2
-    let segment = []
-
-    const flushSegment = () => {
-      if (segment.length > 1) {
-        remaining.push({ ...stroke, points: segment })
-      }
-      segment = []
+    const pieces = eraseStrokeAtPoint(stroke, point, radius + stroke.width / 2)
+    if (pieces.length !== 1 || pieces[0].points.length !== stroke.points.length) {
+      didErase = true
     }
-
-    stroke.points.forEach((strokePoint) => {
-      if (Math.hypot(strokePoint.x - point.x, strokePoint.y - point.y) <= eraseDistance) {
-        didErase = true
-        flushSegment()
-      } else {
-        segment.push(strokePoint)
-      }
-    })
-
-    flushSegment()
+    remaining.push(...pieces)
   })
 
   if (!didErase) return
@@ -854,6 +869,80 @@ function eraseAtPoint(pageIndex, point) {
   state.annotations[pageIndex] = remaining
   state.activeStroke.changed = true
   redrawPage(pageIndex)
+}
+
+function eraseStrokeAtPoint(stroke, point, eraseDistance) {
+  const pieces = []
+  let piece = []
+
+  const flushPiece = () => {
+    if (piece.length > 1) {
+      pieces.push({ ...stroke, points: piece })
+    }
+    piece = []
+  }
+
+  for (let index = 1; index < stroke.points.length; index += 1) {
+    const from = stroke.points[index - 1]
+    const to = stroke.points[index]
+    const interval = segmentCircleInterval(from, to, point, eraseDistance)
+
+    if (!interval) {
+      if (!piece.length) piece.push(from)
+      piece.push(to)
+      continue
+    }
+
+    if (interval.start > 0) {
+      if (!piece.length) piece.push(from)
+      piece.push(interpolateStrokePoint(from, to, interval.start))
+    }
+    flushPiece()
+
+    if (interval.end < 1) {
+      piece.push(interpolateStrokePoint(from, to, interval.end), to)
+    }
+  }
+
+  flushPiece()
+  return pieces
+}
+
+function segmentCircleInterval(from, to, center, radius) {
+  const deltaX = to.x - from.x
+  const deltaY = to.y - from.y
+  const offsetX = from.x - center.x
+  const offsetY = from.y - center.y
+  const a = deltaX * deltaX + deltaY * deltaY
+
+  if (a === 0) {
+    return Math.hypot(offsetX, offsetY) <= radius ? { start: 0, end: 1 } : null
+  }
+
+  const b = 2 * (offsetX * deltaX + offsetY * deltaY)
+  const c = offsetX * offsetX + offsetY * offsetY - radius * radius
+  const discriminant = b * b - 4 * a * c
+
+  if (discriminant < 0) return null
+
+  const root = Math.sqrt(discriminant)
+  const start = clamp((-b - root) / (2 * a), 0, 1)
+  const end = clamp((-b + root) / (2 * a), 0, 1)
+  const midpoint = (start + end) / 2
+  const midpointX = from.x + deltaX * midpoint
+  const midpointY = from.y + deltaY * midpoint
+
+  return Math.hypot(midpointX - center.x, midpointY - center.y) <= radius
+    ? { start, end }
+    : null
+}
+
+function interpolateStrokePoint(from, to, amount) {
+  return {
+    x: from.x + (to.x - from.x) * amount,
+    y: from.y + (to.y - from.y) * amount,
+    opacity: from.opacity + (to.opacity - from.opacity) * amount
+  }
 }
 
 function redrawPage(pageIndex) {
@@ -870,6 +959,9 @@ function redrawPage(pageIndex) {
 function commitHistory() {
   state.history = state.history.slice(0, state.historyIndex + 1)
   state.history.push(structuredClone(state.annotations))
+  if (state.history.length > state.maxHistoryEntries) {
+    state.history.shift()
+  }
   state.historyIndex = state.history.length - 1
   state.hasUnexportedChanges = true
   updateHistoryButtons()
@@ -945,7 +1037,7 @@ function updateCursorRingSize() {
   }
   if (!state.cursorCanvas) return
 
-  const width = tool === 'pen'
+  const width = tool === 'pen' || tool === 'line'
     ? Number(ui.penWidth.value)
     : tool === 'highlighter'
       ? Number(ui.highlighterWidth.value)
@@ -955,6 +1047,16 @@ function updateCursorRingSize() {
   const radius = Math.max(3, width * displayScale / 2)
   ui.cursorRing.style.width = `${radius * 2}px`
   ui.cursorRing.style.height = `${radius * 2}px`
+}
+
+function setActiveTool(tool) {
+  ui.toolSelect.value = tool
+  ui.toolButtons.forEach((toolButton) => {
+    const isActive = toolButton.dataset.tool === tool
+    toolButton.classList.toggle('is-active', isActive)
+    toolButton.setAttribute('aria-pressed', String(isActive))
+  })
+  updateCanvasCursors()
 }
 
 function pointFromEvent(event, canvas) {
