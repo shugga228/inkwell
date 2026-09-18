@@ -36,6 +36,51 @@ const ui = {
   cursorRing: document.querySelector('#cursorRing')
 }
 
+const persistedSettingIds = [
+  'penColor',
+  'highlighterColor',
+  'penOpacity',
+  'penWidth',
+  'highlighterOpacity',
+  'highlighterWidth',
+  'eraserWidth',
+  'smoothingEnabled',
+  'smoothingWeight'
+]
+
+function restoreSettings() {
+  try {
+    const savedSettings = JSON.parse(localStorage.getItem('inkwell-settings') ?? '{}')
+    persistedSettingIds.forEach((id) => {
+      const input = ui[id]
+      const savedValue = savedSettings[id]
+      if (savedValue === undefined) return
+
+      if (input.type === 'checkbox') {
+        input.checked = Boolean(savedValue)
+      } else if (typeof savedValue === 'string') {
+        input.value = savedValue
+      }
+    })
+  } catch {
+    // Ignore unavailable or invalid browser storage and keep the HTML defaults.
+  }
+}
+
+function saveSettings() {
+  try {
+    const settings = Object.fromEntries(persistedSettingIds.map((id) => {
+      const input = ui[id]
+      return [id, input.type === 'checkbox' ? input.checked : input.value]
+    }))
+    localStorage.setItem('inkwell-settings', JSON.stringify(settings))
+  } catch {
+    // Ignore unavailable browser storage.
+  }
+}
+
+restoreSettings()
+
 const state = {
   pdfBytes: null,
   pdfDoc: null,
@@ -77,6 +122,15 @@ settingOutputs.forEach(([inputId, outputId, format]) => {
     ui[outputId].value = format(ui[inputId].value)
     updateCanvasCursors()
   })
+})
+
+persistedSettingIds.forEach((id) => {
+  ui[id].addEventListener('input', saveSettings)
+  ui[id].addEventListener('change', saveSettings)
+})
+
+settingOutputs.forEach(([inputId, outputId, format]) => {
+  ui[outputId].value = format(ui[inputId].value)
 })
 
 ui.undoButton.addEventListener('click', undo)
@@ -237,7 +291,7 @@ async function checkExportCompatibility(bytes) {
 async function loadDocument(bytes, statusText, annotations = null) {
   state.pdfBytes = bytes
   state.exportSupported = false
-  state.annotations = annotations ?? []
+  state.annotations = structuredClone(annotations ?? [])
   state.selection = null
   state.selectionGesture = null
   state.clipboardSelection = null
@@ -348,13 +402,14 @@ async function loadAndRenderPdf(bytes, existingAnnotations = null) {
     page.cleanup()
 
     setupDrawing(annotationCanvas, pageNumber - 1)
-    state.annotations[pageNumber - 1] = existingAnnotations?.[pageNumber - 1] ?? []
+    state.annotations[pageNumber - 1] = structuredClone(existingAnnotations?.[pageNumber - 1] ?? [])
     state.pageSizes[pageNumber - 1] = {
       canvasWidth: viewport.width,
       canvasHeight: viewport.height,
       pdfWidth: page.view[2],
       pdfHeight: page.view[3]
     }
+    redrawPage(pageNumber - 1)
   }
 
   state.history = [structuredClone(state.annotations)]
