@@ -91,6 +91,7 @@ const state = {
   selection: null,
   selectionGesture: null,
   clipboardSelection: null,
+  imageCache: new Map(),
   activeStroke: null,
   currentPointerId: null,
   scale: 2,
@@ -189,23 +190,11 @@ ui.documentViewport.addEventListener('wheel', (event) => {
 
 document.addEventListener('keydown', (event) => {
   const toolByKey = { '1': 'pen', '2': 'highlighter', '3': 'line', '4': 'eraser', '5': 'select' }
-  if (!event.ctrlKey && !event.metaKey && !event.altKey && toolByKey[event.key]
+  const tool = toolByKey[event.key] ?? toolByKey[event.code.replace('Digit', '')]
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && tool
     && !['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
     cancelActiveGesture()
-    setActiveTool(toolByKey[event.key])
-    event.preventDefault()
-    return
-  }
-
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && state.selection) {
-    const { pageIndex, strokeIndexes } = state.selection
-    state.clipboardSelection = structuredClone(strokeIndexes.map((index) => state.annotations[pageIndex][index]))
-    event.preventDefault()
-    return
-  }
-
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && state.clipboardSelection?.length) {
-    pasteSelection()
+    setActiveTool(tool)
     event.preventDefault()
     return
   }
@@ -227,6 +216,37 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === '-') {
     event.preventDefault()
     setZoom(state.zoom - 0.25)
+  }
+})
+
+document.addEventListener('copy', (event) => {
+  if (!state.selection) return
+
+  const { pageIndex, strokeIndexes } = state.selection
+  state.clipboardSelection = structuredClone(strokeIndexes.map((index) => state.annotations[pageIndex][index]))
+  event.clipboardData?.setData('application/x-inkwell-selection', '1')
+  event.preventDefault()
+})
+
+document.addEventListener('paste', async (event) => {
+  if (event.clipboardData?.types.includes('application/x-inkwell-selection')
+    && state.clipboardSelection?.length) {
+    event.preventDefault()
+    pasteSelection()
+    return
+  }
+
+  const imageItem = [...(event.clipboardData?.items ?? [])].find((item) => item.type.startsWith('image/'))
+  if (!imageItem) return
+
+  event.preventDefault()
+  const file = imageItem.getAsFile()
+  if (!file || !state.pdfDoc) return
+
+  try {
+    await pasteImage(file)
+  } catch (error) {
+    ui.status.textContent = `failed to paste image: ${errorMessage(error)}`
   }
 })
 
@@ -295,6 +315,7 @@ async function loadDocument(bytes, statusText, annotations = null) {
   state.selection = null
   state.selectionGesture = null
   state.clipboardSelection = null
+  state.imageCache.clear()
   state.history = []
   state.historyIndex = -1
   state.hasUnexportedChanges = true
@@ -632,6 +653,14 @@ function updateSelectionGesture(event, canvas) {
       gesture.type
     ))
   }))
+  transformed.forEach((stroke) => {
+    if (stroke.tool !== 'image') return
+    const bounds = boundsFromPoints(stroke.points)
+    stroke.x = bounds.x
+    stroke.y = bounds.y
+    stroke.width = bounds.width
+    stroke.height = bounds.height
+  })
   clampStrokesToCanvas(transformed, canvas.width, canvas.height)
   transformed.forEach((stroke, index) => {
     state.annotations[gesture.pageIndex][selection.strokeIndexes[index]] = stroke
@@ -734,7 +763,12 @@ function boundsFromPoints(points) {
 }
 
 function selectionBounds(strokes) {
-  const points = strokes.flatMap((stroke) => stroke.points)
+  const points = strokes.flatMap((stroke) => stroke.tool === 'image'
+    ? [
+      { x: stroke.x, y: stroke.y },
+      { x: stroke.x + stroke.width, y: stroke.y + stroke.height }
+    ]
+    : stroke.points)
   return boundsFromPoints(points)
 }
 
@@ -796,6 +830,10 @@ function clampStrokesToCanvas(strokes, canvasWidth, canvasHeight) {
       point.x += shiftX
       point.y += shiftY
     })
+    if (stroke.tool === 'image') {
+      stroke.x += shiftX
+      stroke.y += shiftY
+    }
   })
 }
 
@@ -864,6 +902,55 @@ function pasteSelection() {
   renderSelectionOverlay()
 }
 
+async function pasteImage(file) {
+  const dataUrl = await fileToDataUrl(file)
+  const image = await loadImage(dataUrl)
+  const pageIndex = state.selection?.pageIndex ?? 0
+  const size = state.pageSizes[pageIndex]
+  const maxWidth = size.canvasWidth * 0.7
+  const maxHeight = size.canvasHeight * 0.7
+  const imageScale = Math.min(1, maxWidth / image.naturalWidth, maxHeight / image.naturalHeight)
+  const width = image.naturalWidth * imageScale
+  const height = image.naturalHeight * imageScale
+  const annotation = {
+    tool: 'image',
+    dataUrl,
+    mimeType: file.type,
+    x: (size.canvasWidth - width) / 2,
+    y: (size.canvasHeight - height) / 2,
+    width,
+    height,
+    points: [
+      { x: (size.canvasWidth - width) / 2, y: (size.canvasHeight - height) / 2 },
+      { x: (size.canvasWidth + width) / 2, y: (size.canvasHeight + height) / 2 }
+    ]
+  }
+
+  state.imageCache.set(dataUrl, image)
+  state.annotations[pageIndex].push(annotation)
+  redrawPage(pageIndex)
+  commitHistory()
+  ui.status.textContent = 'image pasted.'
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(reader.error ?? new Error('could not read clipboard image'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('could not decode clipboard image'))
+    image.src = dataUrl
+  })
+}
+
 function smoothPoint(nextPoint, previousSmoothedPoint, weight) {
   return {
     x: previousSmoothedPoint.x + (nextPoint.x - previousSmoothedPoint.x) * (1 - weight),
@@ -889,12 +976,26 @@ function drawSegment(ctx, stroke, from, to) {
   ctx.restore()
 }
 
+function drawImageAnnotation(ctx, annotation) {
+  const cachedImage = state.imageCache.get(annotation.dataUrl)
+  if (cachedImage) {
+    ctx.drawImage(cachedImage, annotation.x, annotation.y, annotation.width, annotation.height)
+    return
+  }
+
+  loadImage(annotation.dataUrl).then((image) => {
+    state.imageCache.set(annotation.dataUrl, image)
+    const pageIndex = state.annotations.findIndex((annotations) => annotations.includes(annotation))
+    if (pageIndex >= 0) redrawPage(pageIndex)
+  }).catch(() => {})
+}
+
 function resolveOpacity(event, tool) {
   const configuredOpacity = tool === 'highlighter'
     ? Number(ui.highlighterOpacity.value)
     : Number(ui.penOpacity.value)
 
-  if (event.pressure && event.pressure > 0) {
+  if (tool !== 'line' && event.pointerType === 'pen' && event.pressure > 0) {
     return clamp(event.pressure * configuredOpacity, 0.05, 1)
   }
 
@@ -912,6 +1013,11 @@ function eraseAtPoint(pageIndex, point) {
   let didErase = false
 
   strokes.forEach((stroke) => {
+    if (stroke.tool === 'image') {
+      remaining.push(stroke)
+      return
+    }
+
     const pieces = eraseStrokeAtPoint(stroke, point, radius + stroke.width / 2)
     if (pieces.length !== 1 || pieces[0].points.length !== stroke.points.length) {
       didErase = true
@@ -1005,6 +1111,11 @@ function redrawPage(pageIndex) {
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   state.annotations[pageIndex].forEach((stroke) => {
+    if (stroke.tool === 'image') {
+      drawImageAnnotation(ctx, stroke)
+      return
+    }
+
     for (let index = 1; index < stroke.points.length; index += 1) {
       drawSegment(ctx, stroke, stroke.points[index - 1], stroke.points[index])
     }
@@ -1107,10 +1218,14 @@ function updateCursorRingSize() {
 function setActiveTool(tool) {
   ui.toolSelect.value = tool
   ui.toolButtons.forEach((toolButton) => {
-    const isActive = toolButton.dataset.tool === tool
-    toolButton.classList.toggle('is-active', isActive)
-    toolButton.setAttribute('aria-pressed', String(isActive))
+    toolButton.classList.remove('is-active')
+    toolButton.setAttribute('aria-pressed', 'false')
   })
+  const activeButton = [...ui.toolButtons].find((button) => button.dataset.tool === tool)
+  if (activeButton) {
+    activeButton.classList.add('is-active')
+    activeButton.setAttribute('aria-pressed', 'true')
+  }
   updateCanvasCursors()
 }
 
@@ -1141,17 +1256,30 @@ async function exportPdfWithAnnotations() {
   const pdfDoc = await PDFDocument.load(state.pdfBytes)
   const pages = pdfDoc.getPages()
 
-  state.annotations.forEach((strokes, pageIndex) => {
+  for (const [pageIndex, strokes] of state.annotations.entries()) {
     if (!strokes?.length) {
-      return
+      continue
     }
 
     const pdfPage = pages[pageIndex]
     const size = state.pageSizes[pageIndex]
 
-    strokes.forEach((stroke) => {
+    for (const stroke of strokes) {
+      if (stroke.tool === 'image') {
+        const image = stroke.mimeType === 'image/jpeg'
+          ? await pdfDoc.embedJpg(dataUrlToBytes(stroke.dataUrl))
+          : await pdfDoc.embedPng(dataUrlToBytes(stroke.dataUrl))
+        pdfPage.drawImage(image, {
+          x: (stroke.x / size.canvasWidth) * size.pdfWidth,
+          y: size.pdfHeight - ((stroke.y + stroke.height) / size.canvasHeight) * size.pdfHeight,
+          width: (stroke.width / size.canvasWidth) * size.pdfWidth,
+          height: (stroke.height / size.canvasHeight) * size.pdfHeight
+        })
+        continue
+      }
+
       if (!stroke.points || stroke.points.length < 2) {
-        return
+        continue
       }
 
       for (let i = 1; i < stroke.points.length; i += 1) {
@@ -1169,10 +1297,16 @@ async function exportPdfWithAnnotations() {
           opacity: segmentOpacity(stroke.tool, from.opacity ?? stroke.opacity, to.opacity ?? stroke.opacity)
         })
       }
-    })
-  })
+    }
+  }
 
   return pdfDoc.save()
+}
+
+function dataUrlToBytes(dataUrl) {
+  const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+  const binary = atob(base64)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
 }
 
 function canvasToPdfPoint(point, size) {
