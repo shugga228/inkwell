@@ -22,6 +22,7 @@ const ui = {
   eraserWidth: document.querySelector('#eraserWidth'),
   eraserWidthValue: document.querySelector('#eraserWidthValue'),
   smoothingEnabled: document.querySelector('#smoothingEnabled'),
+  aspectRatioEnabled: document.querySelector('#aspectRatioEnabled'),
   smoothingWeight: document.querySelector('#smoothingWeight'),
   weightValue: document.querySelector('#weightValue'),
   undoButton: document.querySelector('#undoButton'),
@@ -45,6 +46,7 @@ const persistedSettingIds = [
   'highlighterWidth',
   'eraserWidth',
   'smoothingEnabled',
+  'aspectRatioEnabled',
   'smoothingWeight'
 ]
 
@@ -91,6 +93,7 @@ const state = {
   selection: null,
   selectionGesture: null,
   clipboardSelection: null,
+  activePageIndex: 0,
   imageCache: new Map(),
   activeStroke: null,
   currentPointerId: null,
@@ -241,9 +244,10 @@ document.addEventListener('paste', async (event) => {
 
   event.preventDefault()
   const file = imageItem.getAsFile()
-  if (!file || !state.pdfDoc) return
+  if (!file) return
 
   try {
+    if (!state.pdfDoc && !(await createBlankPdf())) return
     await pasteImage(file)
   } catch (error) {
     ui.status.textContent = `failed to paste image: ${errorMessage(error)}`
@@ -315,6 +319,7 @@ async function loadDocument(bytes, statusText, annotations = null) {
   state.selection = null
   state.selectionGesture = null
   state.clipboardSelection = null
+  state.activePageIndex = 0
   state.imageCache.clear()
   state.history = []
   state.historyIndex = -1
@@ -339,8 +344,10 @@ async function createBlankPdf() {
     const pdfDoc = await PDFDocument.create()
     pdfDoc.addPage([612, 792])
     await loadDocument(await pdfDoc.save(), 'created blank pdf')
+    return true
   } catch (error) {
     ui.status.textContent = `failed to create pdf: ${errorMessage(error)}`
+    return false
   }
 }
 
@@ -413,7 +420,10 @@ async function loadAndRenderPdf(bytes, existingAnnotations = null) {
     addButton.addEventListener('click', () => addPageAfter(pageNumber - 1))
     removeButton.addEventListener('click', () => removePage(pageNumber - 1))
     removeButton.disabled = state.pdfDoc.numPages === 1
-    wrapper.append(baseCanvas, annotationCanvas)
+    const canvasLayer = document.createElement('div')
+    canvasLayer.className = 'canvas-layer'
+    canvasLayer.append(baseCanvas, annotationCanvas)
+    wrapper.append(canvasLayer)
     wrapper.append(controls)
 
     ui.pages.append(wrapper)
@@ -443,6 +453,7 @@ function setupDrawing(canvas, pageIndex) {
   const ctx = canvas.getContext('2d')
 
   canvas.addEventListener('pointerenter', () => {
+    state.activePageIndex = pageIndex
     state.cursorCanvas = canvas
     updateCursorRingSize()
     ui.cursorRing.classList.add('is-visible')
@@ -798,9 +809,10 @@ function transformSelectionPoint(point, bounds, start, current, type) {
   }
   const scaleX = Math.max(0.05, Math.abs(current.x - anchor.x) / bounds.width)
   const scaleY = Math.max(0.05, Math.abs(current.y - anchor.y) / bounds.height)
+  const scale = ui.aspectRatioEnabled.checked ? Math.max(scaleX, scaleY) : null
   return {
-    x: anchor.x + (point.x - anchor.x) * scaleX,
-    y: anchor.y + (point.y - anchor.y) * scaleY
+    x: anchor.x + (point.x - anchor.x) * (scale ?? scaleX),
+    y: anchor.y + (point.y - anchor.y) * (scale ?? scaleY)
   }
 }
 
@@ -905,7 +917,7 @@ function pasteSelection() {
 async function pasteImage(file) {
   const dataUrl = await fileToDataUrl(file)
   const image = await loadImage(dataUrl)
-  const pageIndex = state.selection?.pageIndex ?? 0
+  const pageIndex = state.activePageIndex ?? 0
   const size = state.pageSizes[pageIndex]
   const maxWidth = size.canvasWidth * 0.7
   const maxHeight = size.canvasHeight * 0.7
@@ -927,9 +939,16 @@ async function pasteImage(file) {
   }
 
   state.imageCache.set(dataUrl, image)
+  const imageIndex = state.annotations[pageIndex].length
   state.annotations[pageIndex].push(annotation)
+  state.selection = {
+    pageIndex,
+    strokeIndexes: [imageIndex],
+    bounds: selectionBounds([annotation])
+  }
   redrawPage(pageIndex)
   commitHistory()
+  renderSelectionOverlay()
   ui.status.textContent = 'image pasted.'
 }
 
@@ -1217,6 +1236,8 @@ function updateCursorRingSize() {
 
 function setActiveTool(tool) {
   ui.toolSelect.value = tool
+  state.selection = null
+  renderSelectionOverlay()
   ui.toolButtons.forEach((toolButton) => {
     toolButton.classList.remove('is-active')
     toolButton.setAttribute('aria-pressed', 'false')

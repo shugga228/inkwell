@@ -399,6 +399,10 @@ main {
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
+.canvas-layer {
+  position: relative;
+}
+
 .page-controls {
   display: flex;
   align-items: center;
