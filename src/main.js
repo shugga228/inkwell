@@ -184,6 +184,9 @@ const finishPan = (event) => {
 
 ui.documentViewport.addEventListener('pointerup', finishPan)
 ui.documentViewport.addEventListener('pointercancel', finishPan)
+ui.documentViewport.addEventListener('contextmenu', (event) => {
+  event.preventDefault()
+})
 ui.documentViewport.addEventListener('wheel', (event) => {
   if (!(event.ctrlKey || event.metaKey)) return
 
