@@ -30,6 +30,7 @@ const ui = {
   zoomOutButton: document.querySelector('#zoomOutButton'),
   zoomInButton: document.querySelector('#zoomInButton'),
   zoomValue: document.querySelector('#zoomValue'),
+  exportFileName: document.querySelector('#exportFileName'),
   exportButton: document.querySelector('#exportButton'),
   status: document.querySelector('#status'),
   documentViewport: document.querySelector('#documentViewport'),
@@ -291,7 +292,7 @@ ui.exportButton.addEventListener('click', async () => {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'annotated.pdf'
+    link.download = exportFileName()
     link.click()
     URL.revokeObjectURL(url)
     state.hasUnexportedChanges = false
@@ -506,8 +507,10 @@ function setupDrawing(canvas, pageIndex) {
       pageIndex,
       tool,
       color: usesPenSettings ? ui.penColor.value : ui.highlighterColor.value,
-      width: usesPenSettings ? Number(ui.penWidth.value) : Number(ui.highlighterWidth.value),
-      opacity: usesPenSettings ? Number(ui.penOpacity.value) : Number(ui.highlighterOpacity.value),
+      width: usesPenSettings
+        ? finiteNumber(ui.penWidth.value, state.penWidth)
+        : finiteNumber(ui.highlighterWidth.value, state.highlighterWidth),
+      opacity,
       points: [
         {
           ...point,
@@ -1014,8 +1017,8 @@ function drawImageAnnotation(ctx, annotation) {
 
 function resolveOpacity(event, tool) {
   const configuredOpacity = tool === 'highlighter'
-    ? Number(ui.highlighterOpacity.value)
-    : Number(ui.penOpacity.value)
+    ? finiteNumber(ui.highlighterOpacity.value, state.highlighterOpacity)
+    : finiteNumber(ui.penOpacity.value, state.defaultPenOpacity)
 
   if (tool !== 'line' && event.pointerType === 'pen' && event.pressure > 0) {
     return clamp(event.pressure * configuredOpacity, 0.05, 1)
@@ -1025,7 +1028,9 @@ function resolveOpacity(event, tool) {
 }
 
 function segmentOpacity(tool, fromOpacity, toOpacity) {
-  return clamp((fromOpacity + toOpacity) / 2, 0.05, 1)
+  const from = finiteNumber(fromOpacity, 1)
+  const to = finiteNumber(toOpacity, from)
+  return clamp((from + to) / 2, 0.05, 1)
 }
 
 function eraseAtPoint(pageIndex, point) {
@@ -1262,18 +1267,34 @@ function pointFromEvent(event, canvas) {
 }
 
 function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value))
+  return Math.min(max, Math.max(min, finiteNumber(value, min)))
 }
 
 function hexToRgb(hex) {
-  const stripped = hex.replace('#', '')
+  const stripped = typeof hex === 'string' ? hex.replace('#', '') : ''
   const value = Number.parseInt(stripped, 16)
+
+  if (!Number.isFinite(value)) {
+    return rgb(0, 0, 0)
+  }
 
   return rgb(
     ((value >> 16) & 255) / 255,
     ((value >> 8) & 255) / 255,
     (value & 255) / 255
   )
+}
+
+function finiteNumber(value, fallback) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+function exportFileName() {
+  const enteredName = ui.exportFileName.value.trim() || 'annotated.pdf'
+  const withoutExtension = enteredName.replace(/\.pdf$/i, '')
+  const safeName = withoutExtension.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '').trim()
+  return `${safeName || 'annotated'}.pdf`
 }
 
 async function exportPdfWithAnnotations() {

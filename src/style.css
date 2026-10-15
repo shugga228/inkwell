@@ -346,6 +346,28 @@ output {
   font-size: 0.75rem;
 }
 
+.export-name {
+  gap: 0.45rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.export-name input {
+  width: 9rem;
+  min-width: 0;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-raised);
+  color: var(--paper);
+  font: inherit;
+}
+
+.export-name input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
 .icon-button {
   width: 2.1rem;
   height: 2.1rem;
